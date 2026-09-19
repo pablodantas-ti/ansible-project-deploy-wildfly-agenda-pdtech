@@ -1,0 +1,6 @@
+---
+- name: Instalar e proteger Adminer
+  hosts: wildfly_servers
+  become: true
+  roles:
+    - adminer

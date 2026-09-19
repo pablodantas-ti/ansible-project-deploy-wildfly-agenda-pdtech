@@ -1,0 +1,89 @@
+---
+- name: Criar diretório de configuração protegida do WildFly
+  ansible.builtin.file:
+    path: /etc/wildfly
+    state: directory
+    owner: root
+    group: wildfly
+    mode: "0750"
+
+- name: Criar diretório de override do systemd
+  ansible.builtin.file:
+    path: /etc/systemd/system/wildfly.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Criar arquivo protegido com conexão do banco
+  ansible.builtin.copy:
+    dest: /etc/wildfly/tarefas.env
+    owner: root
+    group: wildfly
+    mode: "0640"
+    content: |
+      AGENDA_DB_URL="{{ agenda_db_url }}"
+      AGENDA_DB_USER="{{ agenda_db_user }}"
+      AGENDA_DB_PASSWORD="{{ agenda_db_password }}"
+  no_log: true
+  notify: Reiniciar WildFly para aplicar banco
+
+- name: Configurar WildFly para ler credenciais protegidas
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/wildfly.service.d/tarefas-db.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Service]
+      EnvironmentFile=/etc/wildfly/tarefas.env
+  notify: Reiniciar WildFly para aplicar banco
+
+- name: Aplicar configuração do banco no WildFly
+  ansible.builtin.meta: flush_handlers
+- name: Criar diretório de backups
+  ansible.builtin.file:
+    path: "{{ wildfly_backup_dir }}"
+    state: directory
+    owner: wildfly
+    group: wildfly
+    mode: "0755"
+
+- name: Verificar se existe uma versão publicada
+  ansible.builtin.stat:
+    path: "{{ wildfly_deploy_dir }}/{{ tarefas_war_file }}"
+  register: war_atual
+
+- name: Gerar identificador do backup
+  ansible.builtin.command: date +%Y%m%d_%H%M%S
+  register: backup_timestamp
+  changed_when: false
+  when: war_atual.stat.exists
+
+- name: Salvar backup da versão atual
+  ansible.builtin.copy:
+    src: "{{ wildfly_deploy_dir }}/{{ tarefas_war_file }}"
+    dest: "{{ wildfly_backup_dir }}/tarefas_{{ backup_timestamp.stdout }}.war"
+    remote_src: true
+    owner: wildfly
+    group: wildfly
+    mode: "0644"
+  when: war_atual.stat.exists and not ansible_check_mode
+
+- name: Publicar o WAR no WildFly
+  ansible.builtin.copy:
+    src: "{{ tarefas_project_dir }}/target/{{ tarefas_war_file }}"
+    dest: "{{ wildfly_deploy_dir }}/{{ tarefas_war_file }}"
+    remote_src: true
+    owner: wildfly
+    group: wildfly
+    mode: "0644"
+
+- name: Aguardar a aplicação responder
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8080/tarefas/
+    status_code: 200
+  register: tarefas_status
+  retries: 12
+  delay: 5
+  until: tarefas_status.status == 200

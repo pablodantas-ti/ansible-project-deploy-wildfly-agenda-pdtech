@@ -1,0 +1,6 @@
+---
+- name: Preparar banco PostgreSQL da agenda
+  hosts: wildfly_servers
+  become: true
+  roles:
+    - postgresql

@@ -1,0 +1,3 @@
+vault_agenda_db_password: "DEFINA_A_SENHA_DO_BANCO"
+vault_agenda_admin_password: "DEFINA_A_SENHA_DO_ADMIN"
+vault_adminer_password: "DEFINA_A_SENHA_DO_ADMINER"

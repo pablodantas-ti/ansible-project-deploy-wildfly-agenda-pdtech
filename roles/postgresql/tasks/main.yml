@@ -1,0 +1,92 @@
+---
+- name: Instalar PostgreSQL e dependências Python
+  ansible.builtin.apt:
+    name:
+      - postgresql
+      - postgresql-contrib
+      - python3-psycopg
+      - acl
+    state: present
+    update_cache: true
+
+- name: Garantir PostgreSQL iniciado
+  ansible.builtin.service:
+    name: postgresql
+    state: started
+    enabled: true
+
+- name: Criar usuário da aplicação no banco
+  community.postgresql.postgresql_user:
+    name: "{{ agenda_db_user }}"
+    password: "{{ agenda_db_password }}"
+    role_attr_flags: LOGIN
+    state: present
+    login_unix_socket: /var/run/postgresql
+  become: true
+  become_user: postgres
+  no_log: true
+
+- name: Criar banco da agenda
+  community.postgresql.postgresql_db:
+    name: "{{ agenda_db_name }}"
+    owner: "{{ agenda_db_user }}"
+    encoding: UTF-8
+    state: present
+    login_unix_socket: /var/run/postgresql
+  become: true
+  become_user: postgres
+
+- name: Habilitar criptografia de senhas no PostgreSQL
+  community.postgresql.postgresql_query:
+    db: "{{ agenda_db_name }}"
+    login_unix_socket: /var/run/postgresql
+    query: CREATE EXTENSION IF NOT EXISTS pgcrypto;
+  become: true
+  become_user: postgres
+
+- name: Criar tabelas da agenda
+  community.postgresql.postgresql_query:
+    db: "{{ agenda_db_name }}"
+    login_host: 127.0.0.1
+    login_user: "{{ agenda_db_user }}"
+    login_password: "{{ agenda_db_password }}"
+    query: |
+      CREATE TABLE IF NOT EXISTS app_users (
+        id BIGSERIAL PRIMARY KEY,
+        username VARCHAR(50) NOT NULL UNIQUE,
+        password_hash VARCHAR(255) NOT NULL,
+        role VARCHAR(20) NOT NULL CHECK (role IN ('ADMIN', 'USER')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS tasks (
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+        title VARCHAR(100) NOT NULL,
+        due_date DATE NOT NULL,
+        start_time TIME,
+        end_time TIME,
+        all_day BOOLEAN NOT NULL DEFAULT FALSE,
+        priority VARCHAR(20) NOT NULL DEFAULT 'Média',
+        completed BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_tasks_user_date
+      ON tasks (user_id, due_date);
+  no_log: true
+
+- name: Criar administrador inicial da aplicação
+  community.postgresql.postgresql_query:
+    db: "{{ agenda_db_name }}"
+    login_host: 127.0.0.1
+    login_user: "{{ agenda_db_user }}"
+    login_password: "{{ agenda_db_password }}"
+    query: |
+      INSERT INTO app_users (username, password_hash, role)
+      VALUES (%(username)s, crypt(%(password)s, gen_salt('bf')), 'ADMIN')
+      ON CONFLICT (username) DO NOTHING;
+    named_args:
+      username: "{{ agenda_admin_username }}"
+      password: "{{ agenda_admin_password }}"
+  no_log: true

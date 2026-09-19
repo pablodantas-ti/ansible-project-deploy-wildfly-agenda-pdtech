@@ -1,0 +1,150 @@
+---
+- name: Criar diretório de configuração protegida do WildFly
+  ansible.builtin.file:
+    path: /etc/wildfly
+    state: directory
+    owner: root
+    group: wildfly
+    mode: "0750"
+
+- name: Criar diretório de override do systemd
+  ansible.builtin.file:
+    path: /etc/systemd/system/wildfly.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Criar arquivo protegido com conexão do banco
+  ansible.builtin.copy:
+    dest: /etc/wildfly/tarefas.env
+    owner: root
+    group: wildfly
+    mode: "0640"
+    content: |
+      AGENDA_DB_URL="{{ agenda_db_url }}"
+      AGENDA_DB_USER="{{ agenda_db_user }}"
+      AGENDA_DB_PASSWORD="{{ agenda_db_password }}"
+  no_log: true
+  register: tarefas_db_env
+
+- name: Configurar WildFly para ler credenciais protegidas
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/wildfly.service.d/tarefas-db.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Service]
+      EnvironmentFile=/etc/wildfly/tarefas.env
+  register: tarefas_systemd_override
+
+- name: Recarregar systemd se necessário
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: tarefas_systemd_override.changed
+
+- name: Reiniciar WildFly se a configuração do banco mudou
+  ansible.builtin.service:
+    name: wildfly
+    state: restarted
+  when: tarefas_db_env.changed or tarefas_systemd_override.changed
+
+- name: Compilar a aplicação com Maven
+  ansible.builtin.command: mvn clean package
+  args:
+    chdir: "{{ tarefas_project_dir }}"
+  become: true
+  become_user: "{{ tarefas_build_user }}"
+  when: not ansible_check_mode
+
+- name: Criar diretório de backups
+  ansible.builtin.file:
+    path: "{{ wildfly_backup_dir }}"
+    state: directory
+    owner: wildfly
+    group: wildfly
+    mode: "0755"
+
+- name: Ler checksum do WAR compilado
+  ansible.builtin.stat:
+    path: "{{ tarefas_project_dir }}/target/{{ tarefas_war_file }}"
+    get_checksum: true
+  register: tarefas_war_origem
+
+- name: Confirmar que o WAR foi compilado
+  ansible.builtin.assert:
+    that:
+      - tarefas_war_origem.stat.exists
+    fail_msg: "O arquivo WAR não foi criado pelo Maven."
+
+- name: Ler checksum do WAR publicado
+  ansible.builtin.stat:
+    path: "{{ wildfly_deploy_dir }}/{{ tarefas_war_file }}"
+    get_checksum: true
+  register: tarefas_war_publicado
+
+- name: Definir se há nova versão para publicar
+  ansible.builtin.set_fact:
+    tarefas_precisa_deploy: >-
+      {{
+        not tarefas_war_publicado.stat.exists
+        or tarefas_war_origem.stat.checksum != tarefas_war_publicado.stat.checksum
+      }}
+
+- name: Criar nome do backup
+  ansible.builtin.set_fact:
+    tarefas_backup_file: >-
+      {{ wildfly_backup_dir }}/tarefas_{{
+      ansible_date_time.date | replace('-', '') }}_{{
+      ansible_date_time.time | replace(':', '') }}.war
+  when:
+    - tarefas_precisa_deploy
+    - tarefas_war_publicado.stat.exists
+    - not ansible_check_mode
+
+- name: Salvar backup da versão atual
+  ansible.builtin.copy:
+    src: "{{ wildfly_deploy_dir }}/{{ tarefas_war_file }}"
+    dest: "{{ tarefas_backup_file }}"
+    remote_src: true
+    owner: wildfly
+    group: wildfly
+    mode: "0644"
+  when:
+    - tarefas_precisa_deploy
+    - tarefas_war_publicado.stat.exists
+    - not ansible_check_mode
+
+- name: Copiar nova versão para área temporária
+  ansible.builtin.copy:
+    src: "{{ tarefas_project_dir }}/target/{{ tarefas_war_file }}"
+    dest: "{{ wildfly_deploy_dir }}/{{ tarefas_war_file }}.new"
+    remote_src: true
+    owner: wildfly
+    group: wildfly
+    mode: "0644"
+  when:
+    - tarefas_precisa_deploy
+    - not ansible_check_mode
+
+- name: Publicar nova versão no WildFly
+  ansible.builtin.command:
+    argv:
+      - mv
+      - -f
+      - "{{ wildfly_deploy_dir }}/{{ tarefas_war_file }}.new"
+      - "{{ wildfly_deploy_dir }}/{{ tarefas_war_file }}"
+  when:
+    - tarefas_precisa_deploy
+    - not ansible_check_mode
+
+- name: Aguardar aplicação responder após deploy
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8080/tarefas/
+    status_code: 200
+  register: tarefas_status
+  retries: 18
+  delay: 5
+  until: tarefas_status.status == 200
+  when: not ansible_check_mode

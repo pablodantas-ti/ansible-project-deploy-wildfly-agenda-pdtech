@@ -1,0 +1,15 @@
+---
+tarefas_build_user: ansible
+tarefas_project_dir: /home/ansible/projetos/tarefas
+tarefas_war_file: tarefas.war
+wildfly_deploy_dir: /opt/wildfly/standalone/deployments
+wildfly_backup_dir: /opt/wildfly/backups/tarefas
+agenda_db_name: agenda_db
+agenda_db_user: agenda_app
+agenda_db_password: "{{ vault_agenda_db_password }}"
+agenda_admin_username: admin
+agenda_admin_password: "{{ vault_agenda_admin_password }}"
+adminer_basic_auth_user: adminer
+adminer_allowed_network: 192.168.0.0/24
+adminer_htpasswd_file: /etc/nginx/.htpasswd-adminer
+agenda_db_url: jdbc:postgresql://127.0.0.1:5432/agenda_db

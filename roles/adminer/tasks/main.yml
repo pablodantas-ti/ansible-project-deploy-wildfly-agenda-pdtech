@@ -1,0 +1,98 @@
+---
+- name: Instalar Adminer, PHP-FPM e extensão PostgreSQL
+  ansible.builtin.apt:
+    name:
+      - adminer
+      - php-fpm
+      - php-pgsql
+      - apache2-utils
+    state: present
+    update_cache: true
+
+- name: Localizar socket do PHP-FPM
+  ansible.builtin.find:
+    paths: /run/php
+    patterns: "php*-fpm.sock"
+    file_type: any
+  register: adminer_fpm_sockets
+
+- name: Confirmar que PHP-FPM está disponível
+  ansible.builtin.assert:
+    that:
+      - adminer_fpm_sockets.matched | int > 0
+    fail_msg: "O socket do PHP-FPM não foi encontrado em /run/php."
+
+- name: Definir socket PHP-FPM
+  ansible.builtin.set_fact:
+    adminer_php_socket: "{{ adminer_fpm_sockets.files[0].path }}"
+
+- name: Criar arquivo de autenticação do Adminer
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ adminer_htpasswd_file }}"
+    owner: root
+    group: www-data
+    mode: "0640"
+    force: false
+
+- name: Criar senha de acesso ao Adminer
+  ansible.builtin.command:
+    argv:
+      - htpasswd
+      - -i
+      - -B
+      - -C
+      - "12"
+      - "{{ adminer_htpasswd_file }}"
+      - "{{ adminer_basic_auth_user }}"
+    stdin: "{{ vault_adminer_password }}"
+  no_log: true
+
+- name: Criar regras de proteção do Adminer no Nginx
+  ansible.builtin.copy:
+    dest: /etc/nginx/snippets/adminer-access.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      auth_basic "Adminer - acesso restrito";
+      auth_basic_user_file {{ adminer_htpasswd_file }};
+
+      allow 127.0.0.1;
+      allow {{ adminer_allowed_network }};
+      deny all;
+  notify: Recarregar nginx
+
+- name: Configurar rota Adminer no site padrão do Nginx
+  ansible.builtin.blockinfile:
+    path: /etc/nginx/sites-available/default
+    insertafter: "server_name _;"
+    marker: "    # {mark} ANSIBLE ADMINER"
+    block: |
+      location = /adminer {
+          return 301 /adminer/;
+      }
+
+      location /adminer/ {
+          include snippets/adminer-access.conf;
+          alias /usr/share/adminer/;
+          index adminer.php;
+      }
+
+      location ~ ^/adminer/(.+\.php)$ {
+          include snippets/adminer-access.conf;
+          include fastcgi_params;
+          fastcgi_param SCRIPT_FILENAME /usr/share/adminer/$1;
+          fastcgi_param SCRIPT_NAME /adminer/$1;
+          fastcgi_param HTTP_PROXY "";
+          fastcgi_pass unix:{{ adminer_php_socket }};
+      }
+  notify: Recarregar nginx
+
+- name: Aplicar configuração do Nginx agora
+  ansible.builtin.meta: flush_handlers
+
+- name: Verificar se Adminer exige autenticação
+  ansible.builtin.uri:
+    url: http://127.0.0.1/adminer/adminer.php
+    status_code: 401

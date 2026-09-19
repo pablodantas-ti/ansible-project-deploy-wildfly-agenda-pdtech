@@ -1,0 +1,6 @@
+---
+- name: Publicar Lista de Tarefas no WildFly
+  hosts: wildfly_servers
+  become: true
+  roles:
+    - tarefas

@@ -1,0 +1,11 @@
+---
+- name: Recarregar systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: Reiniciar WildFly para aplicar banco
+
+- name: Reiniciar WildFly
+  ansible.builtin.service:
+    name: wildfly
+    state: restarted
+  listen: Reiniciar WildFly para aplicar banco
